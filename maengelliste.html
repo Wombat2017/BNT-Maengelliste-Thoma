@@ -52,6 +52,20 @@
   }
   .subline{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px;}
 
+  .backup-row{display:flex;gap:8px;margin-bottom:10px;}
+  .backup-row button{
+    flex:1;
+    padding:8px 10px;
+    border-radius:8px;
+    border:1px solid var(--line);
+    background:var(--card);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    font-weight:600;
+    font-size:12.5px;
+    cursor:pointer;
+  }
+
   .searchrow{display:flex;gap:8px;margin-bottom:10px;}
   .searchrow input{
     flex:1;
@@ -142,11 +156,11 @@
   .badge.prio-mittel{background:#F1F1EC;color:var(--ink-soft);}
   .badge.prio-niedrig{background:#F1F1EC;color:var(--ink-soft);}
 
-  .thumbs{display:flex;gap:6px;overflow-x:auto;margin-bottom:10px;}
+  .thumbs{display:grid;grid-template-columns:repeat(auto-fill, minmax(100px, 1fr));gap:8px;margin-bottom:10px;}
   .thumbs img{
-    width:64px;height:64px;object-fit:cover;
-    border-radius:6px;border:1px solid var(--line);
-    flex:none;cursor:pointer;
+    width:100%;aspect-ratio:1/1;object-fit:cover;
+    border-radius:8px;border:1px solid var(--line);
+    cursor:pointer;
   }
 
   .card-actions{display:flex;gap:8px;}
@@ -237,7 +251,7 @@
   .photo-add{
     display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;
   }
-  .photo-thumb{position:relative;width:72px;height:72px;}
+  .photo-thumb{position:relative;width:90px;height:90px;}
   .photo-thumb img{width:100%;height:100%;object-fit:cover;border-radius:8px;border:1px solid var(--line);}
   .photo-thumb button{
     position:absolute;top:-6px;right:-6px;
@@ -246,7 +260,7 @@
     font-size:12px;line-height:20px;text-align:center;padding:0;cursor:pointer;
   }
   .add-photo-btn{
-    width:72px;height:72px;border-radius:8px;
+    width:90px;height:90px;border-radius:8px;
     border:1.5px dashed var(--line);
     background:var(--card);
     display:flex;align-items:center;justify-content:center;
@@ -300,7 +314,12 @@
 
 <div class="topbar">
   <h1>Mängelliste <span class="count" id="countLabel"></span></h1>
-  <p class="subline">Alle Einträge werden automatisch gespeichert – nur auf diesem Gerät.</p>
+  <p class="subline">Alle Einträge werden automatisch auf diesem Gerät gespeichert. <b>Bitte regelmäßig sichern</b> – der Gerätespeicher kann sich unter iOS von selbst leeren.</p>
+  <div class="backup-row">
+    <button id="exportBackupBtn">⬇ Sichern</button>
+    <button id="importBackupBtn">⬆ Wiederherstellen</button>
+    <input type="file" id="importFileInput" accept="application/json" hidden>
+  </div>
   <div class="searchrow">
     <input type="text" id="searchInput" placeholder="Suchen nach Ort, Bezeichnung, Beschreibung...">
   </div>
@@ -389,9 +408,28 @@ function showToast(msg){
   setTimeout(()=>toastEl.classList.remove('show'), 1800);
 }
 
+const hasClaudeStorage = (typeof window.storage !== 'undefined' && window.storage && typeof window.storage.get === 'function');
+
+async function storageGet(key){
+  if(hasClaudeStorage){
+    try{ return await window.storage.get(key, false); }catch(e){ return null; }
+  }
+  try{
+    const v = localStorage.getItem(key);
+    return v !== null ? {value: v} : null;
+  }catch(e){ return null; }
+}
+
+async function storageSet(key, value){
+  if(hasClaudeStorage){
+    try{ await window.storage.set(key, value, false); return true; }catch(e){ return false; }
+  }
+  try{ localStorage.setItem(key, value); return true; }catch(e){ return false; }
+}
+
 async function loadEntries(){
   try{
-    const res = await window.storage.get(STORAGE_KEY, false);
+    const res = await storageGet(STORAGE_KEY);
     entries = res ? JSON.parse(res.value) : [];
   }catch(e){
     entries = [];
@@ -401,11 +439,8 @@ async function loadEntries(){
 }
 
 async function persist(){
-  try{
-    await window.storage.set(STORAGE_KEY, JSON.stringify(entries), false);
-  }catch(e){
-    showToast('Speichern fehlgeschlagen');
-  }
+  const ok = await storageSet(STORAGE_KEY, JSON.stringify(entries));
+  if(!ok) showToast('Speichern fehlgeschlagen');
 }
 
 function fmtDate(iso){
@@ -593,6 +628,59 @@ async function deleteEntry(id){
   render();
   showToast('Gelöscht');
 }
+
+async function exportBackup(){
+  if(entries.length === 0){ showToast('Keine Einträge zum Sichern vorhanden'); return; }
+  const dataStr = JSON.stringify(entries, null, 2);
+  const filename = `maengelliste-sicherung-${new Date().toISOString().slice(0,10)}.json`;
+  const blob = new Blob([dataStr], {type:'application/json'});
+
+  if(navigator.canShare){
+    try{
+      const file = new File([blob], filename, {type:'application/json'});
+      if(navigator.canShare({files:[file]})){
+        await navigator.share({files:[file], title:'Mängelliste Sicherung'});
+        return;
+      }
+    }catch(e){ /* Nutzer hat Teilen abgebrochen oder nicht unterstützt -> Fallback unten */ }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('Sicherung wird gespeichert');
+}
+
+document.getElementById('importFileInput').addEventListener('change', async (ev)=>{
+  const file = ev.target.files[0];
+  if(!file) return;
+  try{
+    const text = await file.text();
+    const imported = JSON.parse(text);
+    if(!Array.isArray(imported)) throw new Error('invalid');
+    const replace = confirm(`${imported.length} Einträge in der Sicherung gefunden.\n\nOK = alle aktuellen Einträge damit ersetzen\nAbbrechen = mit vorhandenen Einträgen zusammenführen`);
+    if(replace){
+      entries = imported;
+    } else {
+      const existingIds = new Set(entries.map(e=>e.id));
+      imported.forEach(e=>{ if(!existingIds.has(e.id)) entries.push(e); });
+    }
+    seqCounter = entries.length ? Math.max(...entries.map(e=>e.seq||0)) + 1 : 1;
+    await persist();
+    render();
+    showToast('Sicherung wiederhergestellt');
+  }catch(e){
+    showToast('Datei konnte nicht gelesen werden');
+  }
+  ev.target.value = '';
+});
+
+document.getElementById('exportBackupBtn').addEventListener('click', exportBackup);
+document.getElementById('importBackupBtn').addEventListener('click', ()=>document.getElementById('importFileInput').click());
 
 document.getElementById('addBtn').addEventListener('click', ()=>openSheet(null));
 document.getElementById('closeSheet').addEventListener('click', closeSheet);
