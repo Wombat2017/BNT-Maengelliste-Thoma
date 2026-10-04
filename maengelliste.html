@@ -285,6 +285,16 @@
     cursor:pointer;
   }
 
+  .settings-fields{display:flex;flex-direction:column;}
+  .checkbox-row{
+    display:flex;align-items:center;gap:10px;
+    padding:9px 0;font-size:14.5px;color:var(--ink);
+    border-bottom:1px solid var(--line);
+  }
+  .checkbox-row input{width:18px;height:18px;accent-color:var(--yellow);}
+
+  input[type=range]{width:100%;accent-color:var(--yellow);margin:6px 0 4px;}
+
   .lightbox{
     position:fixed;inset:0;background:rgba(0,0,0,0.9);
     display:none;align-items:center;justify-content:center;z-index:200;padding:20px;
@@ -309,6 +319,7 @@
     .card::before{display:none;}
   }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
 
@@ -332,7 +343,7 @@
 
 <div class="list" id="listContainer"></div>
 
-<button class="fab-export" id="exportBtn" title="Als Bericht drucken/exportieren">⎙</button>
+<button class="fab-export" id="exportBtn" title="PDF-Bericht / Einstellungen">⎙</button>
 <button class="fab" id="addBtn" title="Neuer Mangel">+</button>
 
 <div class="overlay" id="overlay">
@@ -384,6 +395,32 @@
     <input type="file" id="fileInput" accept="image/*" capture="environment" multiple>
 
     <button class="save-btn" id="saveBtn">Speichern</button>
+  </div>
+</div>
+
+<div class="overlay" id="settingsOverlay">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2>PDF-Bericht</h2>
+      <button id="closeSettingsSheet">✕</button>
+    </div>
+
+    <label>Felder im Bericht</label>
+    <div class="settings-fields">
+      <label class="checkbox-row"><input type="checkbox" data-field="ort" checked> Ort</label>
+      <label class="checkbox-row"><input type="checkbox" data-field="position" checked> Position</label>
+      <label class="checkbox-row"><input type="checkbox" data-field="beschreibung" checked> Beschreibung</label>
+      <label class="checkbox-row"><input type="checkbox" data-field="status" checked> Status</label>
+      <label class="checkbox-row"><input type="checkbox" data-field="prio" checked> Priorität</label>
+      <label class="checkbox-row"><input type="checkbox" data-field="datum" checked> Datum</label>
+      <label class="checkbox-row"><input type="checkbox" data-field="fotos" checked> Fotos</label>
+    </div>
+
+    <label>Bildgröße im Bericht: <span id="imgSizeLabel">60</span> mm</label>
+    <input type="range" id="imgSizeSlider" min="20" max="120" step="5" value="60">
+    <p class="subline" style="margin-top:4px;">Hinweis: Der Bericht enthält die Einträge, die aktuell in der Liste sichtbar sind (abhängig von Suche/Filter).</p>
+
+    <button class="save-btn" id="pdfExportBtn">📄 PDF exportieren</button>
   </div>
 </div>
 
@@ -685,7 +722,158 @@ document.getElementById('importBackupBtn').addEventListener('click', ()=>documen
 document.getElementById('addBtn').addEventListener('click', ()=>openSheet(null));
 document.getElementById('closeSheet').addEventListener('click', closeSheet);
 document.getElementById('searchInput').addEventListener('input', render);
-document.getElementById('exportBtn').addEventListener('click', ()=>window.print());
+const SETTINGS_KEY = 'maengel-einstellungen';
+let settings = {
+  fields: {ort:true, position:true, beschreibung:true, status:true, prio:true, datum:true, fotos:true},
+  imageSizeMM: 60
+};
+
+async function loadSettings(){
+  try{
+    const res = await storageGet(SETTINGS_KEY);
+    if(res){
+      const loaded = JSON.parse(res.value);
+      settings = { fields: {...settings.fields, ...(loaded.fields||{})}, imageSizeMM: loaded.imageSizeMM || settings.imageSizeMM };
+    }
+  }catch(e){}
+}
+
+async function persistSettings(){
+  await storageSet(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function applySettingsToUI(){
+  document.querySelectorAll('#settingsOverlay input[type=checkbox]').forEach(cb=>{
+    cb.checked = !!settings.fields[cb.dataset.field];
+  });
+  document.getElementById('imgSizeSlider').value = settings.imageSizeMM;
+  document.getElementById('imgSizeLabel').textContent = settings.imageSizeMM;
+}
+
+function openSettings(){
+  applySettingsToUI();
+  document.getElementById('settingsOverlay').classList.add('show');
+}
+function closeSettings(){
+  document.getElementById('settingsOverlay').classList.remove('show');
+}
+
+document.getElementById('exportBtn').addEventListener('click', openSettings);
+document.getElementById('closeSettingsSheet').addEventListener('click', closeSettings);
+
+document.querySelectorAll('#settingsOverlay input[type=checkbox]').forEach(cb=>{
+  cb.addEventListener('change', ()=>{
+    settings.fields[cb.dataset.field] = cb.checked;
+    persistSettings();
+  });
+});
+
+const imgSizeSlider = document.getElementById('imgSizeSlider');
+imgSizeSlider.addEventListener('input', ()=>{
+  document.getElementById('imgSizeLabel').textContent = imgSizeSlider.value;
+});
+imgSizeSlider.addEventListener('change', ()=>{
+  settings.imageSizeMM = parseInt(imgSizeSlider.value, 10);
+  persistSettings();
+});
+
+function getExportEntries(){
+  const search = document.getElementById('searchInput').value.trim().toLowerCase();
+  let filtered = entries.filter(e => {
+    if(activeFilter !== 'alle' && e.status !== activeFilter) return false;
+    if(!search) return true;
+    const hay = [e.title, e.ort, e.position, e.beschreibung].join(' ').toLowerCase();
+    return hay.includes(search);
+  });
+  filtered.sort((a,b)=> new Date(b.datum) - new Date(a.datum));
+  return filtered;
+}
+
+async function exportPDF(){
+  if(typeof window.jspdf === 'undefined'){
+    showToast('PDF-Funktion konnte nicht geladen werden (keine Internetverbindung?)');
+    return;
+  }
+  const list = getExportEntries();
+  if(list.length === 0){ showToast('Keine Einträge zum Exportieren'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'a4'});
+  const pageWidth = 210, pageHeight = 297, margin = 15, maxWidth = pageWidth - margin*2;
+  let y = margin;
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.text('Mängelliste', margin, y); y += 8;
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(10);
+  doc.setTextColor(100);
+  doc.text(new Date().toLocaleDateString('de-DE') + ' · ' + list.length + ' Einträge', margin, y);
+  doc.setTextColor(0);
+  y += 10;
+
+  const imgSize = settings.imageSizeMM;
+
+  list.forEach((e) => {
+    if(y > pageHeight - margin - 20){ doc.addPage(); y = margin; }
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(13);
+    const titleLines = doc.splitTextToSize(`#${String(e.seq).padStart(3,'0')} – ${e.title}`, maxWidth);
+    titleLines.forEach(l => { doc.text(l, margin, y); y += 6; });
+
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
+    const infoLine = [];
+    if(settings.fields.ort && e.ort) infoLine.push(`Ort: ${e.ort}`);
+    if(settings.fields.position && e.position) infoLine.push(`Position: ${e.position}`);
+    if(infoLine.length){
+      const wrapped = doc.splitTextToSize(infoLine.join('   ·   '), maxWidth);
+      wrapped.forEach(l => { doc.text(l, margin, y); y += 5; });
+    }
+    const metaLine = [];
+    if(settings.fields.status) metaLine.push(`Status: ${e.status === 'offen' ? 'Offen' : 'Behoben'}`);
+    if(settings.fields.prio) metaLine.push(`Priorität: ${e.prio}`);
+    if(settings.fields.datum) metaLine.push(`Datum: ${fmtDate(e.datum)}`);
+    if(metaLine.length){
+      doc.text(metaLine.join('   ·   '), margin, y); y += 6;
+    }
+
+    if(settings.fields.beschreibung && e.beschreibung){
+      const wrapped = doc.splitTextToSize(e.beschreibung, maxWidth);
+      wrapped.forEach(line => {
+        if(y > pageHeight - margin){ doc.addPage(); y = margin; }
+        doc.text(line, margin, y); y += 5;
+      });
+      y += 1;
+    }
+
+    if(settings.fields.fotos && e.images && e.images.length){
+      y += 2;
+      let x = margin;
+      let rowMaxY = y;
+      e.images.forEach((src) => {
+        if(x + imgSize > pageWidth - margin){ x = margin; y = rowMaxY + 4; }
+        if(y + imgSize > pageHeight - margin){ doc.addPage(); y = margin; x = margin; }
+        try{ doc.addImage(src, 'JPEG', x, y, imgSize, imgSize); }catch(err){}
+        x += imgSize + 4;
+        rowMaxY = Math.max(rowMaxY, y + imgSize);
+      });
+      y = rowMaxY + 6;
+    }
+
+    y += 3;
+    if(y > pageHeight - margin){ doc.addPage(); y = margin; }
+    else{
+      doc.setDrawColor(210);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 7;
+    }
+  });
+
+  doc.save(`maengelliste-${new Date().toISOString().slice(0,10)}.pdf`);
+  closeSettings();
+}
+
+document.getElementById('pdfExportBtn').addEventListener('click', exportPDF);
 
 document.getElementById('filterRow').addEventListener('click', (ev)=>{
   if(ev.target.tagName !== 'BUTTON') return;
@@ -696,6 +884,7 @@ document.getElementById('filterRow').addEventListener('click', (ev)=>{
 });
 
 loadEntries();
+loadSettings();
 </script>
 </body>
 </html>
