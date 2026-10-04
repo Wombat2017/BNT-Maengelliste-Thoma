@@ -324,7 +324,7 @@
 <body>
 
 <div class="topbar">
-  <h1>Mängelliste <span class="count" id="countLabel"></span></h1>
+  <h1><span id="appTitle">Mängelliste</span> <span class="count" id="countLabel"></span></h1>
   <p class="subline">Alle Einträge werden automatisch auf diesem Gerät gespeichert. <b>Bitte regelmäßig sichern</b> – der Gerätespeicher kann sich unter iOS von selbst leeren.</p>
   <div class="backup-row">
     <button id="exportBackupBtn">⬇ Sichern</button>
@@ -401,11 +401,14 @@
 <div class="overlay" id="settingsOverlay">
   <div class="sheet">
     <div class="sheet-head">
-      <h2>PDF-Bericht</h2>
+      <h2>Einstellungen</h2>
       <button id="closeSettingsSheet">✕</button>
     </div>
 
-    <label>Felder im Bericht</label>
+    <label>Überschrift</label>
+    <input type="text" id="titleInput" placeholder="Mängelliste">
+
+    <label style="margin-top:20px;">Felder im Bericht</label>
     <div class="settings-fields">
       <label class="checkbox-row"><input type="checkbox" data-field="ort" checked> Ort</label>
       <label class="checkbox-row"><input type="checkbox" data-field="position" checked> Position</label>
@@ -724,6 +727,7 @@ document.getElementById('closeSheet').addEventListener('click', closeSheet);
 document.getElementById('searchInput').addEventListener('input', render);
 const SETTINGS_KEY = 'maengel-einstellungen';
 let settings = {
+  title: 'Mängelliste',
   fields: {ort:true, position:true, beschreibung:true, status:true, prio:true, datum:true, fotos:true},
   imageSizeMM: 60
 };
@@ -733,22 +737,40 @@ async function loadSettings(){
     const res = await storageGet(SETTINGS_KEY);
     if(res){
       const loaded = JSON.parse(res.value);
-      settings = { fields: {...settings.fields, ...(loaded.fields||{})}, imageSizeMM: loaded.imageSizeMM || settings.imageSizeMM };
+      settings = {
+        title: loaded.title || settings.title,
+        fields: {...settings.fields, ...(loaded.fields||{})},
+        imageSizeMM: loaded.imageSizeMM || settings.imageSizeMM
+      };
     }
   }catch(e){}
+  applyTitle();
 }
 
 async function persistSettings(){
   await storageSet(SETTINGS_KEY, JSON.stringify(settings));
 }
 
+function applyTitle(){
+  const t = settings.title.trim() || 'Mängelliste';
+  document.getElementById('appTitle').textContent = t;
+  document.title = t;
+}
+
 function applySettingsToUI(){
+  document.getElementById('titleInput').value = settings.title;
   document.querySelectorAll('#settingsOverlay input[type=checkbox]').forEach(cb=>{
     cb.checked = !!settings.fields[cb.dataset.field];
   });
   document.getElementById('imgSizeSlider').value = settings.imageSizeMM;
   document.getElementById('imgSizeLabel').textContent = settings.imageSizeMM;
 }
+
+document.getElementById('titleInput').addEventListener('change', ()=>{
+  settings.title = document.getElementById('titleInput').value.trim() || 'Mängelliste';
+  applyTitle();
+  persistSettings();
+});
 
 function openSettings(){
   applySettingsToUI();
@@ -804,7 +826,7 @@ async function exportPDF(){
 
   doc.setFont('helvetica','bold');
   doc.setFontSize(18);
-  doc.text('Mängelliste', margin, y); y += 8;
+  doc.text(settings.title || 'Mängelliste', margin, y); y += 8;
   doc.setFont('helvetica','normal');
   doc.setFontSize(10);
   doc.setTextColor(100);
